@@ -9,8 +9,8 @@
 const path = require('path');
 const {
   escapeHtml, stripSpoofChars, VerdictEngine,
-  EVM_TOKEN_CHECK_DEFS, EVM_CHAINS, normalizeEvmRecord, EvmAdapter,
-  normalizeSolanaRecord, SolanaAdapter
+  EVM_TOKEN_CHECK_DEFS, EVM_CHAINS, EVM_WALLET_CHECK_DEFS, normalizeEvmRecord, EvmAdapter,
+  normalizeSolanaRecord, normalizeSolanaWalletRecord, SolanaAdapter
 } = require(path.join(__dirname, 'core.js'));
 
 let passed = 0, failed = 0;
@@ -34,6 +34,7 @@ function fullClean(defs, extra){
 // ---------------------------------------------------------------------
 // EVM — TOKEN
 // ---------------------------------------------------------------------
+(async () => {
 console.log('\n== EVM token checks ==');
 
 { // 1. malicious input — single confirmed critical flag
@@ -168,16 +169,70 @@ console.log('\n== Solana token checks ==');
   console.log((ok ? 'PASS' : 'FAIL') + ' Solana: trusted_token suppresses mintable risk (matches GoPlus\'s documented intent) -> ' + (mintCheck ? mintCheck.status : 'MISSING'));
   ok ? passed++ : failed++;
 }
-{ // 18. unsupported asset type — Solana wallet screening must be refused, not silently attempted
-  let refused = false;
-  try {
-    // fetchChecks is async, but the capability guard throws synchronously before any await
-    const p = SolanaAdapter.fetchChecks('SomeAddress111111111111111111111111111111', 'wallet', null, async()=>{throw new Error('should not be called');});
-    p.catch(()=>{});
-  } catch(e){ refused = true; }
-  const capabilityDeclared = SolanaAdapter.capabilities.walletScreening === false;
-  console.log((capabilityDeclared ? 'PASS' : 'FAIL') + ' Solana adapter declares walletScreening: false (capability-honest)');
+{ // 18. capability now correctly reflects that wallet screening IS supported for Solana
+  const capabilityDeclared = SolanaAdapter.capabilities.walletScreening === true;
+  console.log((capabilityDeclared ? 'PASS' : 'FAIL') + ' Solana adapter declares walletScreening: true (now genuinely supported)');
   capabilityDeclared ? passed++ : failed++;
+}
+{ // 18b. Solana wallet normalization reuses the same schema as EVM wallet screening —
+  // confirmed malicious flag on a Solana address should still resolve to FAIL
+  const { checks, expected, criticalDefsTotal } = normalizeSolanaWalletRecord({ sanctioned: '1' });
+  assertVerdict('Solana wallet: sanctioned address', VerdictEngine.evaluate(checks, expected, 'test', criticalDefsTotal), 'FAIL');
+}
+{ // 18c. clean Solana wallet, full coverage -> PASS
+  const rec = Object.fromEntries(EVM_WALLET_CHECK_DEFS.map(d => [d.key, '0']));
+  const { checks, expected, criticalDefsTotal } = normalizeSolanaWalletRecord(rec);
+  assertVerdict('Solana wallet: fully clean, full coverage', VerdictEngine.evaluate(checks, expected, 'test', criticalDefsTotal), 'PASS');
+}
+{ // 18d. direct-call failure (simulated CORS/network throw) correctly falls back to the proxy
+  // rather than surfacing the failure immediately
+  let directCalled = false, proxyCalled = false;
+  const mockFetch = async (url) => {
+    if(url.includes('api.gopluslabs.io')){
+      directCalled = true;
+      throw new TypeError('Failed to fetch'); // simulates a CORS/network-level block
+    }
+    proxyCalled = true;
+    return { ok: true, json: async () => ({ code: 1, result: { sanctioned: '0' } }) };
+  };
+  await SolanaAdapter._fetchWalletChecks('SomeAddress1111111111111111111111111111111', mockFetch);
+  const ok = directCalled && proxyCalled;
+  console.log((ok ? 'PASS' : 'FAIL') + ' Solana wallet: direct call failure falls back to proxy -> directCalled=' + directCalled + ', proxyCalled=' + proxyCalled);
+  ok ? passed++ : failed++;
+}
+{ // 18e. a clean non-2xx response from the direct call must NOT trigger a proxy retry —
+  // that's an application error, not a CORS problem, and retrying it via proxy would just
+  // waste a round trip on an error that will happen identically either way
+  let directCalled = false, proxyCalled = false;
+  const mockFetch = async (url) => {
+    if(url.includes('api.gopluslabs.io')){
+      directCalled = true;
+      return { ok: false, status: 400, json: async () => ({ message: 'bad request' }) };
+    }
+    proxyCalled = true;
+    return { ok: true, json: async () => ({ code: 1, result: {} }) };
+  };
+  let threw = false;
+  try { await SolanaAdapter._fetchWalletChecks('SomeAddress1111111111111111111111111111111', mockFetch); }
+  catch(e){ threw = true; }
+  const ok = directCalled && !proxyCalled && threw;
+  console.log((ok ? 'PASS' : 'FAIL') + ' Solana wallet: clean 400 response does not trigger proxy fallback -> directCalled=' + directCalled + ', proxyCalled=' + proxyCalled + ', threw=' + threw);
+  ok ? passed++ : failed++;
+}
+{ // 18f. liquidity: empty dex array is a soft risk signal, not silently ignored
+  const { checks } = normalizeSolanaRecord({ dex: [] });
+  const liqCheck = checks.find(c => c.id === 'has_liquidity');
+  const ok = liqCheck && liqCheck.status === 'RISK';
+  console.log((ok ? 'PASS' : 'FAIL') + ' Solana: empty dex[] flagged as no-liquidity risk -> ' + (liqCheck ? liqCheck.status : 'ABSENT'));
+  ok ? passed++ : failed++;
+}
+{ // 18g. liquidity: populated dex array produces a usable summary with correct pool count and TVL sum
+  const rec = { dex: [ {dexname:'Raydium', tvl:'1000.5', lp_holders:[{is_locked:'1'}]}, {dexname:'Orca', tvl:'500'} ] };
+  const { checks, liquiditySummary } = normalizeSolanaRecord(rec);
+  const liqCheck = checks.find(c => c.id === 'has_liquidity');
+  const ok = liqCheck && liqCheck.status === 'PASS' && liquiditySummary && liquiditySummary.poolCount === 2 && Math.abs(liquiditySummary.totalTvl - 1500.5) < 0.01;
+  console.log((ok ? 'PASS' : 'FAIL') + ' Solana: populated dex[] -> correct pool count and TVL sum -> ' + JSON.stringify(liquiditySummary));
+  ok ? passed++ : failed++;
 }
 
 // ---------------------------------------------------------------------
@@ -222,4 +277,5 @@ addrTests.forEach(([name, actual, expected]) => {
 }
 console.log(passed + '/' + (passed + failed) + ' regression tests passed');
 console.log('='.repeat(60));
-if(failed > 0) process.exit(1);
+if(failed > 0) process.exitCode = 1;
+})();

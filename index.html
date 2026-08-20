@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<!--
+  RiskPass
+  © 2026 Stefan Tsezarov. All rights reserved.
+  This source code, design, and content may not be copied, redistributed,
+  or used to create a derivative product without prior written permission.
+
+  ARCHITECTURE NOTE: the RISKPASS CORE block below (evidence model, verdict
+  engine, chain adapters) is copied verbatim from core.js, which is the
+  file the permanent regression suite (riskpass.regression.test.js) tests
+  directly via require(). If you edit the core logic, edit core.js first,
+  run the regression suite, then paste the verified result here — don't
+  edit the two copies independently or they will drift out of sync.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; connect-src https://api.gopluslabs.io https://*.workers.dev; img-src 'self' data:; base-uri 'self'; form-action 'none';">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="author" content="Stefan Tsezarov">
+<title>RiskPass — Wallet &amp; Token Risk Screening</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#0B1220;
+    --surface:#131B2E;
+    --surface-2:#19233A;
+    --border:#2A3550;
+    --text:#E8ECF4;
+    --text-muted:#8B96AC;
+    --accent:#4FD1C5;
+    --accent-dim:rgba(79,209,197,0.14);
+    --danger:#FF5D5D;
+    --danger-dim:rgba(255,93,93,0.13);
+    --caution:#FFB454;
+    --caution-dim:rgba(255,180,84,0.13);
+    --safe:#6FE3A0;
+    --safe-dim:rgba(111,227,160,0.13);
+    --unknown:#8FA3C7;
+    --unknown-dim:rgba(143,163,199,0.13);
+    --radius:14px;
+  }
+  *{box-sizing:border-box;}
+  html{scroll-behavior:smooth;}
+  body{
+    margin:0;
+    background:
+      radial-gradient(ellipse 900px 500px at 15% -10%, rgba(79,209,197,0.10), transparent),
+      radial-gradient(ellipse 700px 500px at 100% 0%, rgba(79,209,197,0.06), transparent),
+      var(--ink);
+    color:var(--text);
+    font-family:'IBM Plex Sans', system-ui, sans-serif;
+    -webkit-font-smoothing:antialiased;
+    line-height:1.5;
+  }
+  a{color:inherit;}
+  .wrap{max-width:960px; margin:0 auto; padding:0 20px;}
+  ::selection{background:var(--accent); color:var(--ink);}
+  button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focus-visible{
+    outline:2px solid var(--accent); outline-offset:2px;
+  }
+
+  header.top{display:flex; align-items:center; justify-content:space-between; padding:22px 20px; max-width:960px; margin:0 auto; gap:16px; flex-wrap:wrap;}
+  .brand{display:flex; align-items:center; gap:10px; font-family:'Space Grotesk', sans-serif; font-weight:700; font-size:1.15rem;}
+  .brand-mark{width:28px; height:28px; border-radius:8px; background:linear-gradient(135deg, var(--accent), #2E9C92); display:flex; align-items:center; justify-content:center; color:var(--ink); font-size:0.85rem; font-weight:700;}
+  .brand-tag{color:var(--text-muted); font-size:0.78rem; font-family:'IBM Plex Mono', monospace; font-weight:400;}
+  .top-nav{display:flex; align-items:center; gap:20px;}
+  .nav-link{color:var(--text-muted); font-size:0.85rem; font-family:'IBM Plex Sans', sans-serif; text-decoration:underline; text-underline-offset:3px; text-decoration-color:var(--border);}
+  .nav-link:hover{color:var(--accent); text-decoration-color:var(--accent);}
+
+  .hero{padding:38px 0 10px; text-align:center;}
+  .eyebrow{display:inline-flex; align-items:center; gap:8px; font-family:'IBM Plex Mono', monospace; font-size:0.72rem; letter-spacing:0.08em; color:var(--accent); text-transform:uppercase; margin-bottom:18px; border:1px solid var(--border); padding:5px 12px; border-radius:100px; background:var(--surface);}
+  .eyebrow .dot{width:6px; height:6px; border-radius:50%; background:var(--safe); box-shadow:0 0 8px var(--safe); animation:pulse 2s infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:0.35;}}
+  h1{font-family:'Space Grotesk', sans-serif; font-weight:700; font-size:clamp(1.9rem, 5vw, 2.9rem); line-height:1.12; margin:0 0 14px; letter-spacing:-0.01em;}
+  h1 .accent{color:var(--accent);}
+  .sub{color:var(--text-muted); font-size:clamp(0.95rem, 2vw, 1.05rem); max-width:560px; margin:0 auto 34px;}
+
+  .scanner{background:var(--surface); border:1px solid var(--border); border-radius:var(--radius); padding:22px; text-align:left; box-shadow:0 20px 60px -20px rgba(0,0,0,0.5);}
+
+  .tabrow{display:flex; gap:10px; margin-bottom:14px; flex-wrap:wrap; align-items:center; justify-content:space-between;}
+  .tabs{display:flex; gap:6px; background:var(--surface-2); padding:4px; border-radius:10px;}
+  .tab{font-family:'IBM Plex Sans', sans-serif; font-size:0.85rem; font-weight:500; padding:8px 16px; border-radius:8px; border:none; background:transparent; color:var(--text-muted); cursor:pointer; transition:all 0.15s ease;}
+  .tab[aria-selected="true"]{background:var(--accent); color:var(--ink); font-weight:600;}
+  .tab:disabled{opacity:0.35; cursor:not-allowed;}
+
+  .field-row{display:flex; gap:10px; flex-wrap:wrap;}
+  .chain-select{background:var(--surface-2); border:1px solid var(--border); color:var(--text); font-family:'IBM Plex Mono', monospace; font-size:0.85rem; padding:0 12px; border-radius:10px; height:52px; min-width:150px; cursor:pointer;}
+  .addr-input{flex:1; min-width:220px; background:var(--surface-2); border:1px solid var(--border); color:var(--text); font-family:'IBM Plex Mono', monospace; font-size:0.88rem; padding:0 14px; border-radius:10px; height:52px;}
+  .addr-input::placeholder{color:#54617e;}
+  .scan-btn{height:52px; padding:0 26px; border-radius:10px; border:none; background:var(--accent); color:var(--ink); font-family:'Space Grotesk', sans-serif; font-weight:700; font-size:0.92rem; cursor:pointer; transition:transform 0.1s ease, filter 0.15s ease; white-space:nowrap;}
+  .scan-btn:hover{filter:brightness(1.08);}
+  .scan-btn:active{transform:scale(0.98);}
+  .scan-btn:disabled{opacity:0.55; cursor:wait;}
+
+  .capability-note{margin-top:12px; font-size:0.74rem; color:var(--text-muted); font-family:'IBM Plex Mono', monospace; display:flex; gap:14px; flex-wrap:wrap;}
+  .capability-note .cap{display:inline-flex; align-items:center; gap:5px;}
+  .capability-note .cap .dot{width:6px; height:6px; border-radius:50%;}
+  .capability-note .cap.yes .dot{background:var(--safe);}
+  .capability-note .cap.no .dot{background:var(--text-muted);}
+
+  .examples{margin-top:12px; font-size:0.78rem; color:var(--text-muted); display:flex; gap:8px; align-items:center; flex-wrap:wrap;}
+  .example-chip{font-family:'IBM Plex Mono', monospace; font-size:0.74rem; background:var(--surface-2); border:1px solid var(--border); color:var(--text-muted); padding:4px 10px; border-radius:100px; cursor:pointer;}
+  .example-chip:hover{color:var(--accent); border-color:var(--accent);}
+  .inline-error{color:var(--danger); font-size:0.8rem; margin-top:10px; font-family:'IBM Plex Mono', monospace;}
+
+  .ad-slot{border:1px dashed var(--border); border-radius:12px; color:var(--text-muted); font-family:'IBM Plex Mono', monospace; font-size:0.72rem; text-align:center; display:flex; align-items:center; justify-content:center; letter-spacing:0.04em; background:repeating-linear-gradient(135deg, rgba(255,255,255,0.015) 0 10px, transparent 10px 20px);}
+  .ad-slot span{background:var(--ink); padding:0 8px;}
+  .ad-leaderboard{height:90px; margin:30px 0;}
+  .ad-inline{height:120px; margin:36px 0;}
+
+  #results{display:none; margin:36px 0;}
+  .pass{position:relative; background:var(--surface); border:1px solid var(--border); border-radius:16px; overflow:hidden;}
+  .pass-top{padding:22px 24px; display:flex; align-items:center; justify-content:space-between; gap:16px; flex-wrap:wrap; border-bottom:1px dashed var(--border);}
+  .verdict{display:flex; align-items:center; gap:12px;}
+  .verdict-badge{font-family:'Space Grotesk', sans-serif; font-weight:700; font-size:1.3rem; padding:8px 18px; border-radius:10px; letter-spacing:0.03em; white-space:nowrap;}
+  .verdict-badge.pass{background:var(--safe-dim); color:var(--safe); border:1px solid var(--safe);}
+  .verdict-badge.caution{background:var(--caution-dim); color:var(--caution); border:1px solid var(--caution);}
+  .verdict-badge.fail{background:var(--danger-dim); color:var(--danger); border:1px solid var(--danger);}
+  .verdict-badge.unknown{background:var(--unknown-dim); color:var(--unknown); border:1px solid var(--unknown);}
+  .verdict-meta{font-size:0.8rem; color:var(--text-muted); font-family:'IBM Plex Mono', monospace;}
+  .pass-id{text-align:right; font-family:'IBM Plex Mono', monospace; font-size:0.72rem; color:var(--text-muted);}
+  .pass-id .addr{color:var(--text); font-size:0.8rem; word-break:break-all; max-width:260px; display:block;}
+
+  .pass-body{padding:22px 24px;}
+  .coverage-line{font-family:'IBM Plex Mono', monospace; font-size:0.76rem; color:var(--text-muted); margin-bottom:16px; padding:10px 12px; background:var(--surface-2); border-radius:8px; border:1px solid var(--border);}
+  .liquidity-panel{margin-bottom:16px; padding:14px; background:var(--surface-2); border-radius:8px; border:1px solid var(--border);}
+  .liquidity-header{font-family:'Space Grotesk', sans-serif; font-weight:600; font-size:0.85rem; color:var(--text); margin-bottom:10px;}
+  .liquidity-pools{display:grid; gap:6px;}
+  .liq-pool{display:flex; justify-content:space-between; gap:10px; font-size:0.78rem; font-family:'IBM Plex Mono', monospace; padding:6px 0; border-bottom:1px solid var(--border);}
+  .liq-pool:last-child{border-bottom:none;}
+  .liq-dex{color:var(--text); font-weight:500;}
+  .liq-tvl{color:var(--accent);}
+  .liq-lock{color:var(--text-muted);}
+  .liquidity-note{margin-top:10px; font-size:0.7rem; color:var(--text-muted); font-style:italic;}
+  .checklist{list-style:none; margin:0; padding:0; display:grid; gap:10px;}
+  .check-item{display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border-radius:10px; background:var(--surface-2); border:1px solid var(--border);}
+  .check-icon{width:22px; height:22px; border-radius:50%; flex-shrink:0; display:flex; align-items:center; justify-content:center; font-size:0.75rem; font-weight:700; margin-top:1px;}
+  .check-icon.ok{background:var(--safe-dim); color:var(--safe);}
+  .check-icon.warn{background:var(--caution-dim); color:var(--caution);}
+  .check-icon.bad{background:var(--danger-dim); color:var(--danger);}
+  .check-icon.unknown{background:var(--unknown-dim); color:var(--unknown);}
+  .check-text{font-size:0.88rem;}
+  .check-text .label{font-weight:500;}
+  .check-text .detail{color:var(--text-muted); font-size:0.78rem; margin-top:2px;}
+  .check-text .src{color:var(--text-muted); font-size:0.68rem; margin-top:3px; font-family:'IBM Plex Mono', monospace;}
+
+  .raw-toggle{margin-top:18px; background:none; border:1px solid var(--border); color:var(--text-muted); font-family:'IBM Plex Mono', monospace; font-size:0.75rem; padding:8px 14px; border-radius:8px; cursor:pointer;}
+  .raw-toggle:hover{color:var(--accent); border-color:var(--accent);}
+  pre.raw{display:none; margin-top:12px; background:var(--ink); border:1px solid var(--border); border-radius:10px; padding:14px; font-family:'IBM Plex Mono', monospace; font-size:0.72rem; color:var(--text-muted); overflow-x:auto; max-height:260px;}
+  .pass-footer{padding:14px 24px; background:var(--surface-2); border-top:1px solid var(--border); font-size:0.72rem; color:var(--text-muted); font-family:'IBM Plex Mono', monospace; display:flex; justify-content:space-between; flex-wrap:wrap; gap:8px;}
+  .loading{display:none; text-align:center; padding:30px; color:var(--text-muted); font-family:'IBM Plex Mono', monospace; font-size:0.85rem;}
+  .scan-error{display:none; background:var(--danger-dim); border:1px solid var(--danger); color:var(--danger); border-radius:10px; padding:14px 18px; font-size:0.85rem; margin:20px 0;}
+
+  .how{margin:52px 0 20px;}
+  .how h2{font-family:'Space Grotesk', sans-serif; font-size:1.3rem; margin-bottom:22px;}
+  .steps{display:grid; grid-template-columns:repeat(3,1fr); gap:16px;}
+  .step{background:var(--surface); border:1px solid var(--border); border-radius:12px; padding:18px;}
+  .step-n{font-family:'IBM Plex Mono', monospace; color:var(--accent); font-size:0.75rem; margin-bottom:8px;}
+  .step h3{font-size:0.95rem; margin:0 0 6px; font-family:'Space Grotesk', sans-serif;}
+  .step p{font-size:0.82rem; color:var(--text-muted); margin:0;}
+
+  footer{margin-top:60px; padding:26px 20px 40px; border-top:1px solid var(--border); text-align:center; color:var(--text-muted); font-size:0.76rem; max-width:960px; margin-left:auto; margin-right:auto;}
+  footer p{max-width:620px; margin:0 auto 6px;}
+
+  @media (max-width: 640px){
+    .steps{grid-template-columns:1fr;}
+    .pass-id{text-align:left;}
+    .pass-top{flex-direction:column; align-items:flex-start;}
+  }
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="brand"><div class="brand-mark">R</div>RiskPass</div>
+  <div class="top-nav">
+    <a class="nav-link" href="whitepaper.html">Whitepaper</a>
+    <div class="brand-tag">v0.2 — EVM + Solana</div>
+  </div>
+</header>
+
+<div class="wrap">
+  <section class="hero">
+    <div class="eyebrow"><span class="dot"></span> Free automated risk pass</div>
+    <h1>Know before you sign.<br>Screen any <span class="accent">wallet or token</span> in seconds.</h1>
+    <p class="sub">Paste an address, get a plain-English risk pass — honeypots, mint authority, sanctioned addresses, and more, checked against each chain's own security model.</p>
+
+    <div class="scanner">
+      <div class="tabrow">
+        <div class="tabs" role="tablist" aria-label="Ecosystem">
+          <button class="tab" role="tab" aria-selected="true" id="eco-evm" onclick="setEcosystem('evm')">EVM</button>
+          <button class="tab" role="tab" aria-selected="false" id="eco-solana" onclick="setEcosystem('solana')">Solana</button>
+        </div>
+        <div class="tabs" role="tablist" aria-label="Asset type">
+          <button class="tab" role="tab" aria-selected="true" id="tab-token" onclick="setMode('token')">Scan Token</button>
+          <button class="tab" role="tab" aria-selected="false" id="tab-wallet" onclick="setMode('wallet')">Scan Wallet</button>
+        </div>
+      </div>
+
+      <div class="field-row">
+        <select class="chain-select" id="chainSelect" aria-label="Chain"></select>
+        <input class="addr-input" id="addrInput" type="text" placeholder="0x… paste a token contract address" autocomplete="off" spellcheck="false">
+        <button class="scan-btn" id="scanBtn" onclick="runScan()">Run risk pass</button>
+      </div>
+
+      <div class="capability-note" id="capabilityNote"></div>
+
+      <div class="examples" id="examplesRow">
+        Try an example:
+        <span class="example-chip" onclick="fillExample('evm','1','0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48')">USDC · Ethereum</span>
+        <span class="example-chip" onclick="fillExample('evm','1','0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2')">WETH · Ethereum</span>
+        <span class="example-chip" onclick="fillExample('solana','solana','EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v')">USDC · Solana</span>
+      </div>
+      <div class="inline-error" id="inlineError" style="display:none;"></div>
+    </div>
+  </section>
+
+  <div class="ad-slot ad-leaderboard"><span>Ad space — 728×90 leaderboard (connect your ad network here)</span></div>
+
+  <div class="loading" id="loadingState">Querying public security data…</div>
+  <div class="scan-error" id="scanError"></div>
+
+  <section id="results"></section>
+
+  <div class="ad-slot ad-inline"><span>Ad space — inline unit (connect your ad network here)</span></div>
+
+  <section class="how">
+    <h2>How the pass is built</h2>
+    <div class="steps">
+      <div class="step">
+        <div class="step-n">01</div>
+        <h3>Pick a chain and an address</h3>
+        <p>Each ecosystem uses its own address format and its own validator — a Solana address is never accepted where an EVM address is expected, or the reverse.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">02</div>
+        <h3>Chain-native security checks run</h3>
+        <p>Data is pulled live from GoPlus Security's public API. The checks themselves differ by chain — Solana's mint/freeze authority model isn't force-fit into EVM's contract-function model.</p>
+      </div>
+      <div class="step">
+        <div class="step-n">03</div>
+        <h3>A conservative verdict is formed</h3>
+        <p>A single confirmed severe finding always means FAIL. Missing or unreadable data never quietly becomes a clean PASS — it's reported as insufficient data instead.</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<footer>
+  <p>RiskPass is an independent screening aid built on free, public third-party data (GoPlus Security). It is not financial, legal, or investment advice, and a PASS result is not a guarantee of safety — it means no flags were found among the indicators actually checked, not that none exist. Always verify independently before signing any transaction or sending funds.</p>
+  <p>The address you submit is sent directly from your browser to GoPlus Security's API to run the check — RiskPass itself does not see, log, or store it, but GoPlus's own data practices apply on their end.</p>
+  <p><a class="nav-link" href="whitepaper.html">Read the Whitepaper</a> &nbsp;·&nbsp; <a class="nav-link" href="RiskPass-Whitepaper.pdf">Download PDF</a></p>
+  <p style="margin-top:14px; color:var(--text-muted);">© 2026 Stefan Tsezarov. All rights reserved.</p>
+</footer>
+
+<script>
+/* =====================================================================
+   RISKPASS CORE  (verbatim from core.js — see note at top of this file)
+   ===================================================================== */
+function escapeHtml(str){
+  if(typeof document !== 'undefined'){
+    const div = document.createElement('div');
+    div.textContent = String(str);
+    return div.innerHTML;
+  }
+  return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+}
+
+function stripSpoofChars(str){
+  return String(str).replace(/[\u200B-\u200D\uFEFF\u202A-\u202E\u2066-\u2069]/g, '');
+}
+
+function getPath(obj, path){
+  let cur = obj;
+  for(const key of path){
+    if(cur === null || cur === undefined || typeof cur !== 'object') return undefined;
+    cur = cur[key];
+  }
+  return cur;
+}
+
+function flagState(v){
+  if(v === '1' || v === 1 || v === true) return 'on';
+  if(v === '0' || v === 0 || v === false) return 'off';
+  if(v === undefined || v === null) return 'missing';
+  return 'unrecognized';
+}
+
+function buildCheck(def, rawValue, source){
+  const state = flagState(rawValue);
+  if(state === 'missing') return null;
+  if(state === 'unrecognized'){
+    return { id: def.key, category: def.category || 'general', status: 'UNKNOWN', critical: !!def.critical,
+      severityWeight: 1, label: def.label, detail: def.detail + ' (provider returned an unrecognized value type for this field)', source };
+  }
+  const on = state === 'on';
+  return { id: def.key, category: def.category || 'general', status: on ? 'RISK' : 'PASS',
+    critical: !!def.critical, severityWeight: def.sev === 'bad' ? 3 : 1, label: def.label, detail: def.detail, source };
+}
+
+const VerdictEngine = {
+  evaluate(checks, expectedChecks, source, criticalDefsTotal){
+    const risks = checks.filter(c => c.status === 'RISK');
+    const unknowns = checks.filter(c => c.status === 'UNKNOWN');
+    const valid = checks.filter(c => c.status === 'PASS' || c.status === 'RISK').length;
+    const criticalFindings = risks.filter(c => c.critical).length;
+    const criticalHit = criticalFindings > 0;
+    const criticalSeen = checks.filter(c => c.critical).length;
+    const criticalMissing = typeof criticalDefsTotal === 'number' ? Math.max(0, criticalDefsTotal - criticalSeen) : 0;
+
+    let score = 0;
+    risks.forEach(c => { score += c.severityWeight; });
+    score += unknowns.length;
+
+    const coverage = expectedChecks ? valid / expectedChecks : 0;
+    const insufficientData = valid === 0 || coverage < 0.4;
+
+    let verdict, label, sub;
+    if(criticalHit){
+      verdict = 'fail'; label = 'FAIL';
+      sub = 'A confirmed high-severity indicator was detected';
+    } else if(insufficientData){
+      verdict = 'unknown'; label = 'INSUFFICIENT DATA';
+      sub = `Only ${valid}/${expectedChecks} indicators returned usable data — too little to form a judgment. This is not a clean result.`;
+    } else if(score >= 6){
+      verdict = 'fail'; label = 'FAIL';
+      sub = 'Significant risk indicators detected';
+    } else if(score >= 2 || unknowns.length > 0){
+      verdict = 'caution'; label = 'CAUTION';
+      sub = (unknowns.length > 0 && score < 2)
+        ? 'Some indicators returned unreadable data — treat as unverified, not clean'
+        : 'Risk indicators detected — review before proceeding';
+    } else {
+      verdict = 'pass'; label = 'PASS';
+      sub = `No major risk indicators across ${valid}/${expectedChecks} checks — not a safety guarantee`;
+    }
+
+    if(criticalMissing > 0 && (verdict === 'pass' || verdict === 'caution')){
+      sub += ` Note: ${criticalMissing} high-severity check${criticalMissing===1?'':'s'} could not be evaluated (no data returned) — treat this result as incomplete on that point.`;
+    }
+
+    const confidence = insufficientData ? 'low' : (unknowns.length > 0 || criticalMissing > 0 ? 'medium' : 'high');
+
+    return { verdict, label, sub, score, checksExpected: expectedChecks, checksReceived: checks.length,
+      checksValid: valid, checksUnknown: unknowns.length, criticalFindings, criticalMissing, coverage, confidence, source, checks };
+  }
+};
+
+const EVM_TOKEN_CHECK_DEFS = [
+  {key:'is_honeypot', category:'liquidity', label:'Honeypot pattern', detail:'Token can be bought but may not be sellable.', sev:'bad', critical:true},
+  {key:'cannot_sell_all', category:'liquidity', label:'Cannot sell full balance', detail:'Contract may block selling 100% of holdings.', sev:'bad', critical:true},
+  {key:'selfdestruct', category:'control', label:'Self-destruct function present', detail:'Contract could be destroyed, freezing funds.', sev:'bad', critical:true},
+  {key:'owner_change_balance', category:'control', label:'Owner can edit balances', detail:'Contract owner can directly alter holder balances.', sev:'bad', critical:true},
+  {key:'can_take_back_ownership', category:'control', label:'Ownership can be reclaimed', detail:'A renounced-looking contract may still be controllable.', sev:'bad', critical:true},
+  {key:'hidden_owner', category:'control', label:'Hidden owner address', detail:'Contract owner is concealed from standard checks.', sev:'bad', critical:false},
+  {key:'is_blacklisted', category:'control', label:'Blacklist function present', detail:'Owner can block specific addresses from trading.', sev:'warn', critical:false},
+  {key:'is_mintable', category:'supply', label:'Owner can mint new supply', detail:'Total supply is not fixed.', sev:'warn', critical:false},
+  {key:'transfer_pausable', category:'control', label:'Transfers can be paused', detail:'Owner can freeze all trading at will.', sev:'warn', critical:false},
+  {key:'slippage_modifiable', category:'economics', label:'Tax/slippage can be changed', detail:'Buy/sell tax is not locked.', sev:'warn', critical:false},
+  {key:'is_proxy', category:'control', label:'Upgradeable proxy contract', detail:'Logic can be swapped after deployment.', sev:'warn', critical:false},
+  {key:'is_anti_whale_modifiable', category:'control', label:'Anti-whale limits are adjustable', detail:'Transaction size limits can be changed by the owner.', sev:'warn', critical:false},
+];
+
+const EVM_WALLET_CHECK_DEFS = [
+  {key:'sanctioned', category:'reputation', label:'On a sanctions list', detail:'Address appears on a known sanctions record.', sev:'bad', critical:true},
+  {key:'phishing_activities', category:'reputation', label:'Linked to phishing', detail:'Address has been associated with phishing activity.', sev:'bad', critical:true},
+  {key:'stealing_attack', category:'reputation', label:'Linked to theft', detail:'Address has been associated with a stealing attack.', sev:'bad', critical:true},
+  {key:'money_laundering', category:'reputation', label:'Linked to money laundering', detail:'Flagged in money-laundering-related activity.', sev:'bad', critical:true},
+  {key:'darkweb_transactions', category:'reputation', label:'Dark web transaction history', detail:'Address has interacted with dark web markets.', sev:'bad', critical:true},
+  {key:'cybercrime', category:'reputation', label:'Linked to cybercrime', detail:'Address has been associated with cybercrime.', sev:'bad', critical:true},
+  {key:'blackmail_activities', category:'reputation', label:'Linked to blackmail/extortion', detail:'Flagged in blackmail-related activity.', sev:'bad', critical:true},
+  {key:'mixer', category:'reputation', label:'Mixer / tumbler service', detail:'Address is associated with a coin-mixing service.', sev:'warn', critical:false},
+  {key:'fake_kyc', category:'reputation', label:'Fake KYC association', detail:'Linked to fraudulent identity-verification activity.', sev:'warn', critical:false},
+  {key:'blacklist_doubt', category:'reputation', label:'On a community blacklist (unconfirmed)', detail:'Reported but not fully confirmed.', sev:'warn', critical:false},
+  {key:'gas_abuse', category:'reputation', label:'Gas abuse pattern', detail:'Associated with gas-griefing or abuse patterns.', sev:'warn', critical:false},
+];
+
+const EVM_CHAINS = {"1":"Ethereum","56":"BNB Chain","137":"Polygon","42161":"Arbitrum","10":"Optimism","8453":"Base","43114":"Avalanche","250":"Fantom"};
+
+function normalizeEvmRecord(record, assetType){
+  const defs = assetType === 'token' ? EVM_TOKEN_CHECK_DEFS : EVM_WALLET_CHECK_DEFS;
+  const checks = [];
+  let expected = defs.length;
+  let criticalDefsTotal = defs.filter(d => d.critical).length;
+
+  defs.forEach(def => {
+    const c = buildCheck(def, record[def.key], 'GoPlus Security (EVM)');
+    if(c) checks.push(c);
+  });
+
+  if(assetType === 'token'){
+    expected += 2;
+    if(record.is_open_source !== undefined){
+      const openState = flagState(record.is_open_source);
+      if(openState === 'on'){
+        checks.push({id:'is_open_source', category:'transparency', status:'PASS', critical:false, severityWeight:0, label:'Source code verified', detail:'Contract code has been published/verified.', source:'GoPlus Security (EVM)'});
+      } else if(openState === 'off'){
+        checks.push({id:'is_open_source', category:'transparency', status:'RISK', critical:false, severityWeight:2, label:'Source code not verified', detail:'Contract code has not been published/verified.', source:'GoPlus Security (EVM)'});
+      }
+    }
+    if(record.buy_tax !== undefined || record.sell_tax !== undefined){
+      const buyNum = parseFloat(record.buy_tax);
+      const sellNum = parseFloat(record.sell_tax);
+      const buyOk = Number.isFinite(buyNum);
+      const sellOk = Number.isFinite(sellNum);
+      if(buyOk || sellOk){
+        const buyPct = buyOk ? buyNum * 100 : null;
+        const sellPct = sellOk ? sellNum * 100 : null;
+        const high = (buyPct !== null && buyPct > 10) || (sellPct !== null && sellPct > 10);
+        checks.push({id:'tax_rate', category:'economics', status: high ? 'RISK' : 'PASS', critical:false, severityWeight:2,
+          label: high ? 'High buy/sell tax' : 'Buy/sell tax within normal range',
+          detail: `Buy tax ${buyPct !== null ? buyPct.toFixed(1)+'%' : 'unknown'} · Sell tax ${sellPct !== null ? sellPct.toFixed(1)+'%' : 'unknown'}`,
+          source:'GoPlus Security (EVM)'});
+      } else {
+        checks.push({id:'tax_rate', category:'economics', status:'UNKNOWN', critical:false, severityWeight:1,
+          label:'Tax data unreadable', detail:'Buy/sell tax fields returned a non-numeric value.', source:'GoPlus Security (EVM)'});
+      }
+    }
+  }
+  return { checks, expected, criticalDefsTotal };
+}
+
+const EvmAdapter = {
+  id: 'evm', name: 'EVM',
+  capabilities: { tokenSecurity:true, walletScreening:true, txSimulation:false, liquidityAnalysis:false, contractAnalysis:true },
+  chains: EVM_CHAINS,
+  validateAddress(addr){ return /^0x[a-fA-F0-9]{40}$/.test(String(addr).trim()); },
+  async fetchChecks(addr, assetType, chainId, fetchImpl){
+    if(!EVM_CHAINS[chainId]) throw new Error('Unsupported or unrecognized chain for the EVM adapter.');
+    if(assetType === 'wallet' && !this.capabilities.walletScreening) throw new Error('Wallet screening is not supported by this adapter.');
+    const endpoint = assetType === 'token'
+      ? `https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${addr}`
+      : `https://api.gopluslabs.io/api/v1/address_security/${addr}?chain_id=${chainId}`;
+    const res = await fetchImpl(endpoint);
+    if(!res.ok){
+      let detail = '';
+      try { const errBody = await res.json(); detail = errBody.error || errBody.message || errBody.detail || ''; }
+      catch(_){ /* response wasn't JSON, or already consumed — proceed without extra detail */ }
+      throw new Error(`Network response was not OK (${res.status})${detail ? ': ' + detail : ''}`);
+    }
+    const data = await res.json();
+    if(data.code !== 1 || !data.result) throw new Error(data.message || 'No security data returned for this address.');
+    let record;
+    if(assetType === 'token'){
+      const keys = Object.keys(data.result);
+      if(keys.length === 0) throw new Error('This address does not appear to be a recognized token contract on the selected chain.');
+      record = data.result[keys[0]];
+    } else {
+      record = data.result;
+    }
+    const { checks, expected, criticalDefsTotal } = normalizeEvmRecord(record, assetType);
+    return { checks, expected, criticalDefsTotal, record, raw: data };
+  }
+};
+
+const SOLANA_CHECK_DEFS = [
+  {key:'closable', path:['closable','status'], category:'control', label:'Program can be closed', detail:'Developer can close the token program, eliminating all associated assets.', sev:'bad', critical:true},
+  {key:'balance_mutable', path:['balance_mutable_authority','status'], category:'control', label:'Balance can be altered', detail:'Developer retains authority to directly change user token balances.', sev:'bad', critical:true},
+  {key:'freezable', path:['freezable','status'], category:'control', label:'Accounts can be frozen', detail:'Developer can freeze holder accounts, blocking trading.', sev:'bad', critical:false},
+  {key:'mintable', path:['mintable','status'], category:'supply', label:'Supply can be minted', detail:'Total supply is not fixed; new tokens can be created.', sev:'warn', critical:false},
+  {key:'metadata_mutable', path:['metadata_mutable','status'], category:'transparency', label:'Metadata can be changed', detail:'Name, symbol, or description can be altered after launch.', sev:'warn', critical:false},
+  {key:'transfer_fee_upgradable', path:['transfer_fee_upgradable','status'], category:'economics', label:'Transfer fee can be changed', detail:'Fee equivalent to buy/sell tax is not locked.', sev:'warn', critical:false},
+  {key:'default_account_state_upgradable', path:['default_account_state_upgradable','status'], category:'control', label:'Default account state is upgradable', detail:'The default frozen/initialized state for new accounts can be changed.', sev:'warn', critical:false},
+  {key:'hook_upgradable', path:['transfer_hook_upgradable','status'], category:'control', label:'Transfer hook is upgradable', detail:'External hook logic attached to transfers can be changed later.', sev:'warn', critical:false},
+];
+
+function normalizeSolanaRecord(record){
+  const checks = [];
+  let expected = SOLANA_CHECK_DEFS.length + 4;
+  let criticalDefsTotal = SOLANA_CHECK_DEFS.filter(d => d.critical).length + 3;
+  const trusted = flagState(record.trusted_token) === 'on';
+
+  SOLANA_CHECK_DEFS.forEach(def => {
+    const raw = getPath(record, def.path);
+    if(def.key === 'mintable' && trusted && flagState(raw) === 'on'){
+      checks.push({id:'mintable', category:'supply', status:'PASS', critical:false, severityWeight:0,
+        label:'Mint function present, but token is GoPlus-verified trusted', detail:'This token is on GoPlus\'s trusted-token list; mint authority is a known, accepted design choice for it.', source:'GoPlus Security (Solana)'});
+      return;
+    }
+    const c = buildCheck(def, raw, 'GoPlus Security (Solana)');
+    if(c) checks.push(c);
+  });
+
+  if(record.non_transferable !== undefined){
+    const state = flagState(record.non_transferable);
+    if(state === 'on'){
+      checks.push({id:'non_transferable', category:'liquidity', status:'RISK', critical:true, severityWeight:3, label:'Token is non-transferable', detail:'Token cannot be transferred once acquired — functionally a honeypot.', source:'GoPlus Security (Solana)'});
+    } else if(state === 'off'){
+      checks.push({id:'non_transferable', category:'liquidity', status:'PASS', critical:false, severityWeight:0, label:'Token is transferable', detail:'No transfer restriction detected.', source:'GoPlus Security (Solana)'});
+    }
+  }
+
+  const hookAddr = getPath(record, ['transfer_hook','address']);
+  if(hookAddr !== undefined){
+    const hasHook = typeof hookAddr === 'string' && hookAddr.length > 0;
+    checks.push({id:'transfer_hook_present', category:'control', status: hasHook ? 'RISK' : 'PASS', critical:false, severityWeight:1,
+      label: hasHook ? 'External transfer hook present' : 'No external transfer hook',
+      detail: hasHook ? 'A hook contract can intervene in transfers and may block trading.' : 'No hook contract detected in the token program.',
+      source:'GoPlus Security (Solana)'});
+  }
+
+  const creatorMalicious = getPath(record, ['creator','malicious_address']);
+  if(creatorMalicious !== undefined){
+    const state = flagState(creatorMalicious);
+    if(state === 'on') checks.push({id:'creator_malicious', category:'reputation', status:'RISK', critical:true, severityWeight:3, label:'Creator address flagged malicious', detail:'The token creator address appears on a known malicious-address record.', source:'GoPlus Security (Solana)'});
+    else if(state === 'off') checks.push({id:'creator_malicious', category:'reputation', status:'PASS', critical:false, severityWeight:0, label:'Creator address not flagged', detail:'Creator address does not appear on known malicious-address records.', source:'GoPlus Security (Solana)'});
+  }
+
+  const mintAuthority = getPath(record, ['mintable','authority']);
+  if(mintAuthority === undefined || mintAuthority === null){
+    checks.push({id:'mint_authority_malicious', category:'reputation', status:'PASS', critical:false, severityWeight:0,
+      label:'No mint authority to check', detail:'No mint authority address was returned — consistent with mint authority having been revoked, though this cannot be confirmed from this field alone.', source:'GoPlus Security (Solana)'});
+  } else {
+    const state = flagState(mintAuthority.malicious_address);
+    if(state === 'on') checks.push({id:'mint_authority_malicious', category:'reputation', status:'RISK', critical:true, severityWeight:3, label:'Mint authority flagged malicious', detail:'The address holding mint authority appears on a known malicious-address record.', source:'GoPlus Security (Solana)'});
+    else if(state === 'off') checks.push({id:'mint_authority_malicious', category:'reputation', status:'PASS', critical:false, severityWeight:0, label:'Mint authority not flagged', detail:'Mint authority address does not appear on known malicious-address records.', source:'GoPlus Security (Solana)'});
+    else if(state === 'unrecognized') checks.push({id:'mint_authority_malicious', category:'reputation', status:'UNKNOWN', critical:true, severityWeight:1, label:'Mint authority flagged malicious', detail:'A mint authority exists, but the malicious-address field for it returned an unreadable value.', source:'GoPlus Security (Solana)'});
+  }
+
+  // ---- Liquidity (Dex Info) ----
+  let liquiditySummary = null;
+  if(Array.isArray(record.dex)){
+    if(record.dex.length === 0){
+      checks.push({id:'has_liquidity', category:'liquidity', status:'RISK', critical:false, severityWeight:1,
+        label:'No tracked DEX liquidity found', detail:'No liquidity pool was found for this token among tracked DEXs — it may not be actively tradable.', source:'GoPlus Security (Solana)'});
+    } else {
+      const totalTvl = record.dex.reduce((sum, d) => sum + (Number.isFinite(parseFloat(d.tvl)) ? parseFloat(d.tvl) : 0), 0);
+      const topPool = [...record.dex].sort((a,b) => (parseFloat(b.tvl)||0) - (parseFloat(a.tvl)||0))[0];
+      checks.push({id:'has_liquidity', category:'liquidity', status:'PASS', critical:false, severityWeight:0,
+        label:`Liquidity found on ${record.dex.length} DEX pool${record.dex.length===1?'':'s'}`,
+        detail:`Combined tracked TVL approximately $${totalTvl.toLocaleString(undefined,{maximumFractionDigits:0})}. Largest pool: ${topPool.dexname || 'unknown'}.`,
+        source:'GoPlus Security (Solana)'});
+      liquiditySummary = {
+        poolCount: record.dex.length,
+        totalTvl,
+        pools: record.dex.map(d => ({
+          dexname: d.dexname || 'Unknown',
+          type: d.type || 'unknown',
+          tvl: Number.isFinite(parseFloat(d.tvl)) ? parseFloat(d.tvl) : null,
+          feeRate: d.fee_rate,
+          openTime: d.open_time,
+          topLpHolderLocked: Array.isArray(d.lp_holders) && d.lp_holders.length > 0 ? flagState(d.lp_holders[0].is_locked) : 'missing',
+        })),
+      };
+    }
+  }
+
+  return { checks, expected, criticalDefsTotal, liquiditySummary };
+}
+
+function normalizeSolanaWalletRecord(record){
+  const defs = EVM_WALLET_CHECK_DEFS;
+  const checks = [];
+  const criticalDefsTotal = defs.filter(d => d.critical).length;
+  defs.forEach(def => {
+    const c = buildCheck(def, record[def.key], 'GoPlus Security (Solana)');
+    if(c) checks.push(c);
+  });
+  return { checks, expected: defs.length, criticalDefsTotal };
+}
+
+// SETUP: after deploying riskpass-solana-proxy-worker.js to Cloudflare Workers,
+// replace this with your actual *.workers.dev URL (see deployment steps provided
+// separately). Until replaced, Solana scans will fail with a clear setup message
+// rather than a confusing generic error.
+const SOLANA_PROXY_URL = 'https://cool-sound-6db2riskpass.stefan-tsezarov82.workers.dev';
+
+const SolanaAdapter = {
+  id: 'solana', name: 'Solana',
+  capabilities: { tokenSecurity:true, walletScreening:true, txSimulation:false, liquidityAnalysis:true, contractAnalysis:false },
+  chains: { 'solana': 'Solana Mainnet' },
+  validateAddress(addr){ return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(addr).trim()); },
+
+  async fetchChecks(addr, assetType, chainId, fetchImpl){
+    if(assetType === 'wallet') return this._fetchWalletChecks(addr, fetchImpl);
+    if(SOLANA_PROXY_URL.includes('REPLACE-WITH-YOUR-WORKER-URL')){
+      throw new Error('Solana scanning needs the CORS proxy deployed first — see setup instructions. GoPlus\'s Solana API blocks direct browser requests.');
+    }
+    const endpoint = `${SOLANA_PROXY_URL}?contract_addresses=${addr}`;
+    const res = await fetchImpl(endpoint);
+    if(!res.ok){
+      let detail = '';
+      try { const errBody = await res.json(); detail = errBody.error || errBody.message || errBody.detail || ''; }
+      catch(_){ /* response wasn't JSON, or already consumed — proceed without extra detail */ }
+      throw new Error(`Network response was not OK (${res.status})${detail ? ': ' + detail : ''}`);
+    }
+    const data = await res.json();
+    if(data.code !== 1 || !data.result) throw new Error(data.message || data.error || 'No security data returned for this address.');
+    const keys = Object.keys(data.result);
+    if(keys.length === 0) throw new Error('This address does not appear to be a recognized token on Solana.');
+    const record = data.result[keys[0]];
+    const { checks, expected, criticalDefsTotal, liquiditySummary } = normalizeSolanaRecord(record);
+    return { checks, expected, criticalDefsTotal, record, raw: data, liquiditySummary };
+  },
+
+  async _fetchWalletChecks(addr, fetchImpl){
+    const directUrl = `https://api.gopluslabs.io/api/v1/address_security/${addr}?chain_id=solana`;
+    let res;
+    try{
+      res = await fetchImpl(directUrl);
+    } catch(directErr){
+      if(SOLANA_PROXY_URL.includes('REPLACE-WITH-YOUR-WORKER-URL')){
+        throw new Error('Solana wallet screening needs the CORS proxy deployed and updated first — see setup instructions.');
+      }
+      const proxyUrl = `${SOLANA_PROXY_URL}?wallet_address=${addr}`;
+      res = await fetchImpl(proxyUrl);
+    }
+    if(!res.ok){
+      let detail = '';
+      try { const errBody = await res.json(); detail = errBody.error || errBody.message || errBody.detail || ''; }
+      catch(_){ /* response wasn't JSON, or already consumed */ }
+      throw new Error(`Network response was not OK (${res.status})${detail ? ': ' + detail : ''}`);
+    }
+    const data = await res.json();
+    if(data.code !== 1 || !data.result) throw new Error(data.message || data.error || 'No security data returned for this address.');
+    const { checks, expected, criticalDefsTotal } = normalizeSolanaWalletRecord(data.result);
+    return { checks, expected, criticalDefsTotal, record: data.result, raw: data, liquiditySummary: null };
+  }
+};
+
+const Adapters = { evm: EvmAdapter, solana: SolanaAdapter };
+
+/* =====================================================================
+   RISKPASS UI LAYER — the only part of this file allowed to touch the
+   DOM. It knows about Adapters and VerdictEngine, but nothing in the
+   core above knows this UI exists.
+   ===================================================================== */
+let ecosystem = 'evm';
+let mode = 'token';
+
+function currentAdapter(){ return Adapters[ecosystem]; }
+
+function populateChainSelect(){
+  const sel = document.getElementById('chainSelect');
+  const adapter = currentAdapter();
+  sel.innerHTML = '';
+  Object.entries(adapter.chains).forEach(([id, name]) => {
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = name;
+    sel.appendChild(opt);
+  });
+  sel.style.display = Object.keys(adapter.chains).length > 1 ? '' : 'none';
+}
+
+function renderCapabilityNote(){
+  const adapter = currentAdapter();
+  const labels = {tokenSecurity:'Token security', walletScreening:'Wallet screening', txSimulation:'Tx simulation', liquidityAnalysis:'Liquidity analysis', contractAnalysis:'Contract analysis'};
+  const html = Object.entries(adapter.capabilities).map(([key, val]) => {
+    return `<span class="cap ${val?'yes':'no'}"><span class="dot"></span>${labels[key]||key}${val ? '' : ' — not yet available'}</span>`;
+  }).join('');
+  document.getElementById('capabilityNote').innerHTML = html;
+}
+
+function setEcosystem(eco){
+  ecosystem = eco;
+  document.getElementById('eco-evm').setAttribute('aria-selected', eco === 'evm');
+  document.getElementById('eco-solana').setAttribute('aria-selected', eco === 'solana');
+  populateChainSelect();
+  renderCapabilityNote();
+  const adapter = currentAdapter();
+  const walletTab = document.getElementById('tab-wallet');
+  walletTab.disabled = !adapter.capabilities.walletScreening;
+  if(!adapter.capabilities.walletScreening && mode === 'wallet') setMode('token');
+  document.getElementById('addrInput').placeholder = eco === 'evm'
+    ? (mode === 'token' ? '0x… paste a token contract address' : '0x… paste a wallet address to screen')
+    : (mode === 'token' ? 'Paste a Solana token mint address' : 'Paste a Solana wallet address to screen');
+  document.getElementById('inlineError').style.display = 'none';
+}
+
+function setMode(m){
+  mode = m;
+  document.getElementById('tab-token').setAttribute('aria-selected', m === 'token');
+  document.getElementById('tab-wallet').setAttribute('aria-selected', m === 'wallet');
+  document.getElementById('addrInput').placeholder = ecosystem === 'evm'
+    ? (m === 'token' ? '0x… paste a token contract address' : '0x… paste a wallet address to screen')
+    : (m === 'token' ? 'Paste a Solana token mint address' : 'Paste a Solana wallet address to screen');
+  document.getElementById('inlineError').style.display = 'none';
+}
+
+function fillExample(eco, chainId, addr){
+  setEcosystem(eco);
+  setMode('token');
+  document.getElementById('chainSelect').value = chainId;
+  document.getElementById('addrInput').value = addr;
+}
+
+const CHAIN_LABEL = {};
+Object.entries(EVM_CHAINS).forEach(([k,v]) => CHAIN_LABEL[k]=v);
+CHAIN_LABEL['solana'] = 'Solana Mainnet';
+
+function isTransientFailure(e){
+  return e.name === 'AbortError' || /\(50[0-9]\)/.test(e.message || '');
+}
+
+async function attemptScan(adapter, addr, mode, chainId, timeoutMs){
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try{
+    const out = await adapter.fetchChecks(addr, mode, chainId, (url) => fetch(url, {signal: controller.signal}));
+    return out;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function runScan(){
+  const addrRaw = document.getElementById('addrInput').value.trim();
+  const chainId = document.getElementById('chainSelect').value;
+  const errEl = document.getElementById('inlineError');
+  const scanErr = document.getElementById('scanError');
+  const results = document.getElementById('results');
+  const loading = document.getElementById('loadingState');
+  const adapter = currentAdapter();
+
+  errEl.style.display = 'none';
+  scanErr.style.display = 'none';
+  results.style.display = 'none';
+  results.innerHTML = '';
+
+  if(!adapter.validateAddress(addrRaw)){
+    errEl.textContent = ecosystem === 'evm'
+      ? 'That doesn\'t look like a valid EVM address (expected 0x followed by 40 hex characters).'
+      : 'That doesn\'t look like a valid Solana address (expected 32-44 base58 characters).';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('scanBtn');
+  btn.disabled = true; btn.textContent = 'Scanning…';
+  loading.textContent = 'Querying public security data…';
+  loading.style.display = 'block';
+
+  const timeoutMs = 20000;
+
+  try{
+    let out;
+    try{
+      out = await attemptScan(adapter, addrRaw, mode, chainId, timeoutMs);
+    } catch(firstErr){
+      if(!isTransientFailure(firstErr)) throw firstErr;
+      loading.textContent = 'First attempt hit a transient error — retrying once…';
+      await new Promise(r => setTimeout(r, 2000));
+      out = await attemptScan(adapter, addrRaw, mode, chainId, timeoutMs);
+    }
+    const result = VerdictEngine.evaluate(out.checks, out.expected, adapter.name, out.criticalDefsTotal);
+    renderPass(result, out.record, addrRaw, chainId, out.raw, adapter, out.liquiditySummary);
+  } catch(e){
+    if(e.name === 'AbortError'){
+      scanErr.textContent = ecosystem === 'solana'
+        ? `Scan timed out after ${timeoutMs/1000} seconds, twice in a row. GoPlus's Solana security API is labeled beta by GoPlus itself and can be slow or briefly unavailable. Try again in a moment, or check this address directly at gopluslabs.io/token-security/solana/${addrRaw}`
+        : `Scan timed out after ${timeoutMs/1000} seconds. The security data provider may be temporarily slow. Try again, or verify manually via a block explorer.`;
+    } else {
+      scanErr.textContent = 'Scan failed: ' + e.message + '. This can happen if the address has no data yet, or if your network/browser blocked the request. Try again, or verify manually via a block explorer.';
+    }
+    scanErr.style.display = 'block';
+  } finally {
+    loading.style.display = 'none';
+    btn.disabled = false; btn.textContent = 'Run risk pass';
+  }
+}
+
+function tokenName(record){
+  if(record && record.token_name){
+    return `${escapeHtml(stripSpoofChars(record.token_name))} (${escapeHtml(stripSpoofChars(record.token_symbol || ''))})`;
+  }
+  if(record && record.metadata && record.metadata.name){
+    return `${escapeHtml(stripSpoofChars(record.metadata.name))} (${escapeHtml(stripSpoofChars(record.metadata.symbol || ''))})`;
+  }
+  return mode === 'token' ? 'Token' : 'Wallet address';
+}
+
+function renderLiquidityPanel(liq){
+  if(!liq) return '';
+  const lockLabel = (state) => state === 'on' ? 'Top LP position locked' : state === 'off' ? 'Top LP position not locked' : 'Lock status not reported';
+  const rows = liq.pools.map(p => `
+    <div class="liq-pool">
+      <span class="liq-dex">${escapeHtml(p.dexname)}</span>
+      <span class="liq-tvl">${p.tvl !== null ? '$' + p.tvl.toLocaleString(undefined,{maximumFractionDigits:0}) : 'TVL unknown'}</span>
+      <span class="liq-lock">${lockLabel(p.topLpHolderLocked)}</span>
+    </div>`).join('');
+  return `
+    <div class="liquidity-panel">
+      <div class="liquidity-header">Liquidity — ${liq.poolCount} pool${liq.poolCount===1?'':'s'} · ~$${liq.totalTvl.toLocaleString(undefined,{maximumFractionDigits:0})} tracked TVL</div>
+      <div class="liquidity-pools">${rows}</div>
+      <div class="liquidity-note">Informational only — reflects tracked DEX pools at scan time, not scored beyond the basic "has any liquidity" check above.</div>
+    </div>`;
+}
+
+function renderPass(result, record, addr, chainId, raw, adapter, liquiditySummary){
+  const name = tokenName(record);
+  const flagged = result.checks.filter(c => c.status === 'RISK');
+  const unknownChecks = result.checks.filter(c => c.status === 'UNKNOWN');
+  const clear = result.checks.filter(c => c.status === 'PASS');
+
+  const html = `
+    <div class="pass">
+      <div class="pass-top">
+        <div class="verdict">
+          <div class="verdict-badge ${result.verdict}">${result.label}</div>
+          <div class="verdict-meta"><strong>${result.sub}</strong></div>
+        </div>
+        <div class="pass-id">
+          ${escapeHtml(CHAIN_LABEL[chainId] || String(chainId))} · ${adapter.name} · ${mode === 'token' ? 'Token scan' : 'Wallet scan'}
+          <span class="addr">${addr}</span>
+        </div>
+      </div>
+      <div class="pass-body">
+        <div class="coverage-line">${name} · ${result.checksValid}/${result.checksExpected} checks completed · ${result.checksUnknown} unreadable · confidence: ${result.confidence}</div>
+        ${renderLiquidityPanel(liquiditySummary)}
+        <ul class="checklist">
+          ${flagged.map(checkRow).join('')}
+          ${unknownChecks.map(checkRow).join('')}
+          ${clear.map(checkRow).join('')}
+          ${result.checks.length === 0 ? '<li class="check-item"><div class="check-text">No usable flag data was returned for this address — treat as unverified rather than safe, and check manually.</div></li>' : ''}
+        </ul>
+        <button class="raw-toggle" onclick="toggleRaw(this)">View raw API response</button>
+        <pre class="raw">${JSON.stringify(raw, null, 2).replace(/</g,'&lt;')}</pre>
+      </div>
+      <div class="pass-footer">
+        <span>Scanned ${new Date().toLocaleString()}</span>
+        <span>Source: GoPlus Security (${adapter.name})</span>
+      </div>
+    </div>
+  `;
+  const results = document.getElementById('results');
+  results.innerHTML = html;
+  results.style.display = 'block';
+  results.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function checkRow(c){
+  let icon;
+  if(c.status === 'UNKNOWN') icon = {cls:'unknown', s:'?'};
+  else if(c.status === 'RISK') icon = c.critical ? {cls:'bad', s:'!'} : {cls: c.severityWeight >= 3 ? 'bad' : 'warn', s:'!'};
+  else icon = {cls:'ok', s:'✓'};
+  const suffix = c.status === 'UNKNOWN' ? ' — unreadable data, not verified' : (c.status === 'RISK' ? (c.critical ? ' — high severity' : '') : ' — successfully checked, clear');
+  return `<li class="check-item">
+    <div class="check-icon ${icon.cls}">${icon.s}</div>
+    <div class="check-text">
+      <div class="label">${c.label}${suffix}</div>
+      <div class="detail">${c.detail}</div>
+      <div class="src">${c.source}</div>
+    </div>
+  </li>`;
+}
+
+function toggleRaw(btn){
+  const pre = btn.nextElementSibling;
+  const showing = pre.style.display === 'block';
+  pre.style.display = showing ? 'none' : 'block';
+  btn.textContent = showing ? 'View raw API response' : 'Hide raw API response';
+}
+
+document.getElementById('addrInput').addEventListener('keydown', e => { if(e.key === 'Enter') runScan(); });
+
+// initial UI state
+populateChainSelect();
+renderCapabilityNote();
+</script>
+</body>
+</html>
